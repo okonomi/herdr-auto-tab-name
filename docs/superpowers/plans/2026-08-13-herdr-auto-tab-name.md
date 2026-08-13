@@ -18,9 +18,20 @@
 - API メソッド名は `session.snapshot` / `pane.process_info` / `tab.rename` の 3 つだけを使う
 - 成功レスポンスは `{"id":...,"result":{...}}`、失敗は `{"id":...,"error":{"code":"...","message":"..."}}`
 - ポーリング間隔は 1000ms。snapshot の連続失敗が 30000ms 続いたらデーモンは終了する
-- 状態の永続化先は `${HERDR_PLUGIN_STATE_DIR}/state.json`、pidfile は `${HERDR_PLUGIN_STATE_DIR}/daemon.pid`、ログは `${HERDR_PLUGIN_STATE_DIR}/daemon.log`
+- 状態の永続化先は `${HERDR_PLUGIN_STATE_DIR}/state.json`、pidfile は `${HERDR_PLUGIN_STATE_DIR}/daemon.json`、ログは `${HERDR_PLUGIN_STATE_DIR}/daemon.log`
+- state ディレクトリは `0o700`、state.json と daemon.log は `0o600` で作る。状態の書き込みは一時ファイル + `rename` で原子的に行う
 - ランタイム依存パッケージを追加しない。devDependencies は `typescript` / `vitest` / `@types/node` のみ
 - 実行中コマンド名は `argv0` から導く。`name` フィールドは使わない(claude はプロセス名がバージョン文字列になるため)
+
+## 先行事例からの前提
+
+既存のタブ命名系プラグインを調査した結果を、実装上の前提として記録する。
+
+- **`[[events]]` はイベントごとにプロセスを起動する。** マニフェストレベルのフィルタが無いため、高頻度イベントを購読するとその都度 exec が走る(`wyattjoh/herdr-plugin-renamer` のマニフェストに同旨のコメントがある)。本プラグインがイベントフックを使わずポーリングで済ませる根拠
+- **`[[startup]]` を使っている先行プラグインが見当たらない。** `iurysza/herdr-tab-smart-rename` は `[[actions]]` の `start` / `stop` / `status` で detached worker を起動している。Task 1 のスパイクで `[[startup]]` の実挙動を確かめたうえで、いずれにせよ同等の制御アクションを用意する(Task 9)
+- **状態モデルは先行事例と一致している。** `iurysza` のタブ状態は `{ manual, autoLabel, expectedLabel, observedLabel }` で、本計画の `{ mode, lastCommand, lastSetLabel }` と同じ「手動ロック + 自分が付けた名前の突き合わせ」に独立に到達している
+- **herdr はタブの `label` を自分で書き換えない。** エージェント作業中でも label は既定の番号のままであることを実スナップショットで確認済み。したがって label の変化はユーザー操作か本プラグインの操作のいずれかに限られる
+- **マニフェストのイベント名はドット区切り**(`tab.renamed`)。API スキーマ上の型名(`tab_renamed`)とは表記が異なる。本プラグインはイベントを使わないが、将来使う場合の注意点
 
 ---
 
@@ -753,9 +764,9 @@ git commit -m "feat: タブのモードと次のタブ名を決める純粋関�
 `tests/state.test.ts`:
 
 ```ts
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../src/state.js";
 import type { TabState } from "../src/types.js";
@@ -811,6 +822,27 @@ describe("StateStore", () => {
     await store.save();
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ "w1:t1": claudeState });
   });
+
+  it("ディレクトリを 0700、ファイルを 0600 で作る", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "herdr-auto-tab-name-"));
+    const path = join(dir, "nested", "state.json");
+    const store = await StateStore.load(path);
+    store.set("w1:t1", claudeState);
+    await store.save();
+
+    expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("書き込み後に一時ファイルを残さない", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "herdr-auto-tab-name-"));
+    const path = join(dir, "state.json");
+    const store = await StateStore.load(path);
+    store.set("w1:t1", claudeState);
+    await store.save();
+
+    expect(await readdir(dir)).toEqual(["state.json"]);
+  });
 });
 ```
 
@@ -824,8 +856,8 @@ Expected: FAIL — `Failed to resolve import "../src/state.js"`
 `src/state.ts`:
 
 ```ts
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { TabState } from "./types.js";
 
 /**
@@ -872,10 +904,17 @@ export class StateStore {
     }
   }
 
+  /**
+   * 一時ファイルに書いてから rename で置き換える。デーモンが書き込み途中で
+   * 落ちても、読み手が中途半端な JSON を掴むことがない。
+   */
   async save(): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
+    const directory = dirname(this.filePath);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     const record = Object.fromEntries(this.states);
-    await writeFile(this.filePath, JSON.stringify(record, null, 2), "utf8");
+    const tempPath = join(directory, `.state.${process.pid}.tmp`);
+    await writeFile(tempPath, JSON.stringify(record, null, 2), { encoding: "utf8", mode: 0o600 });
+    await rename(tempPath, this.filePath);
   }
 }
 
@@ -893,7 +932,7 @@ function isTabState(value: unknown): value is TabState {
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `npx vitest run tests/state.test.ts`
-Expected: PASS(5 tests)
+Expected: PASS(7 tests)
 
 - [ ] **Step 5: commit する**
 
@@ -1571,6 +1610,7 @@ Expected: PASS(4 tests)
 `src/env.ts`:
 
 ```ts
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export type PluginEnv = {
@@ -1588,8 +1628,13 @@ export function readPluginEnv(env: NodeJS.ProcessEnv): PluginEnv {
 }
 
 export const statePath = (stateDir: string): string => join(stateDir, "state.json");
-export const pidPath = (stateDir: string): string => join(stateDir, "daemon.pid");
+export const pidPath = (stateDir: string): string => join(stateDir, "daemon.json");
 export const logPath = (stateDir: string): string => join(stateDir, "daemon.log");
+
+/** state ディレクトリを本人だけが読める権限で用意する。 */
+export async function ensureStateDir(stateDir: string): Promise<void> {
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+}
 ```
 
 - [ ] **Step 6: デーモン本体を書く**
@@ -1599,7 +1644,7 @@ export const logPath = (stateDir: string): string => join(stateDir, "daemon.log"
 ```ts
 import { appendFile, unlink } from "node:fs/promises";
 import { SocketHerdrApi } from "./api.js";
-import { logPath, pidPath, readPluginEnv, statePath } from "./env.js";
+import { ensureStateDir, logPath, pidPath, readPluginEnv, statePath } from "./env.js";
 import { FailureTracker } from "./failure-tracker.js";
 import { runCycle } from "./poller.js";
 import { SocketClient } from "./socket.js";
@@ -1612,9 +1657,13 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 async function main(): Promise<void> {
   const env = readPluginEnv(process.env);
+  await ensureStateDir(env.stateDir);
   const file = logPath(env.stateDir);
   const log = (message: string): void => {
-    void appendFile(file, `${new Date().toISOString()} ${message}\n`, "utf8").catch(() => {});
+    void appendFile(file, `${new Date().toISOString()} ${message}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    }).catch(() => {});
   };
 
   const api = new SocketHerdrApi(new SocketClient(env.socketPath));
@@ -1669,21 +1718,29 @@ git commit -m "feat: ポーリングループを回すデーモン本体を追�
 
 ---
 
-### Task 9: ランチャーと pidfile
+### Task 9: CLI(start / stop / status)と pidfile
 
-`[[startup]]` から呼ばれる薄い入口。既にデーモンが生きていれば何もせず、居なければ detached で起動して即座に終わる。startup hook が子プロセスを待ち合わせても、終了時に kill しても壊れないようにするための層。
+デーモンの制御面。`[[startup]]` から呼ばれる `start` は、既にデーモンが生きていれば何もせず、居なければ detached で起動して即座に終わる。startup hook が子プロセスを待ち合わせても終了時に kill しても壊れないようにするための層であり、同時に `[[actions]]` から手で叩ける操作でもある。
+
+先行プラグインは `[[startup]]` を使わず `[[actions]]` でワーカーを起動している。Task 1 のスパイク結果がどちらでも、この CLI があれば運用できる。
+
+pidfile は JSON にする。pid だけを保存して `process.kill(pid, 0)` で生存確認すると、pid が再利用されたときに無関係なプロセスを「デーモンが生きている」と誤認するため、起動時刻とスクリプトパスも保存して照合する。
 
 **Files:**
 - Create: `src/pidfile.ts`
-- Create: `src/launcher.ts`
+- Create: `src/cli.ts`
 - Test: `tests/pidfile.test.ts`
 
 **Interfaces:**
-- Consumes: `pidPath` / `logPath` / `readPluginEnv`(Task 8)
+- Consumes: `pidPath` / `logPath` / `readPluginEnv` / `ensureStateDir`(Task 8)
 - Produces:
-  - `readPid(filePath: string): Promise<number | null>`
-  - `writePid(filePath: string, pid: number): Promise<void>`
+  - `type DaemonRecord = { pid: number; script: string; startedAt: string }`
+  - `readRecord(filePath: string): Promise<DaemonRecord | null>`
+  - `writeRecord(filePath: string, record: DaemonRecord): Promise<void>`
+  - `removeRecord(filePath: string): Promise<void>`
   - `isAlive(pid: number): boolean`
+  - `commandLineOf(pid: number): string | null`
+  - `isRunningDaemon(record: DaemonRecord | null): boolean`
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1694,36 +1751,104 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isAlive, readPid, writePid } from "../src/pidfile.js";
+import {
+  commandLineOf,
+  isAlive,
+  isRunningDaemon,
+  readRecord,
+  removeRecord,
+  writeRecord,
+  type DaemonRecord,
+} from "../src/pidfile.js";
 
 async function tempPath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "herdr-pid-"));
-  return join(dir, "daemon.pid");
+  return join(dir, "daemon.json");
 }
+
+const record = (over: Partial<DaemonRecord> = {}): DaemonRecord => ({
+  pid: 4242,
+  script: "/opt/plugin/dist/daemon.js",
+  startedAt: "2026-08-13T00:00:00.000Z",
+  ...over,
+});
 
 describe("pidfile", () => {
   it("ファイルが無ければ null", async () => {
-    expect(await readPid(await tempPath())).toBeNull();
+    expect(await readRecord(await tempPath())).toBeNull();
   });
 
-  it("書いた pid を読み戻せる", async () => {
+  it("書いた内容を読み戻せる", async () => {
     const path = await tempPath();
-    await writePid(path, 4242);
-    expect(await readPid(path)).toBe(4242);
+    await writeRecord(path, record());
+    expect(await readRecord(path)).toEqual(record());
   });
 
-  it("数値でない中身は null として扱う", async () => {
+  it("壊れた JSON は null として扱う", async () => {
     const path = await tempPath();
-    await writeFile(path, "not-a-pid", "utf8");
-    expect(await readPid(path)).toBeNull();
+    await writeFile(path, "{ not json", "utf8");
+    expect(await readRecord(path)).toBeNull();
   });
 
+  it("形の合わない JSON は null として扱う", async () => {
+    const path = await tempPath();
+    await writeFile(path, JSON.stringify({ pid: "abc" }), "utf8");
+    expect(await readRecord(path)).toBeNull();
+  });
+
+  it("消したあとは null になる", async () => {
+    const path = await tempPath();
+    await writeRecord(path, record());
+    await removeRecord(path);
+    expect(await readRecord(path)).toBeNull();
+  });
+
+  it("存在しないファイルを消してもエラーにしない", async () => {
+    await expect(removeRecord(await tempPath())).resolves.toBeUndefined();
+  });
+});
+
+describe("isAlive", () => {
   it("自分自身のプロセスは生きている", () => {
     expect(isAlive(process.pid)).toBe(true);
   });
 
   it("存在しない pid は生きていない", () => {
     expect(isAlive(2_147_483_646)).toBe(false);
+  });
+});
+
+describe("commandLineOf", () => {
+  it("自分自身のコマンドラインが取れる", () => {
+    expect(commandLineOf(process.pid)).toContain("node");
+  });
+
+  it("存在しない pid では null", () => {
+    expect(commandLineOf(2_147_483_646)).toBeNull();
+  });
+});
+
+describe("isRunningDaemon", () => {
+  it("記録が無ければ動いていない", () => {
+    expect(isRunningDaemon(null)).toBe(false);
+  });
+
+  it("pid が生きていなければ動いていない", () => {
+    expect(isRunningDaemon(record({ pid: 2_147_483_646 }))).toBe(false);
+  });
+
+  it("pid は生きていてもコマンドラインが一致しなければ動いていない", () => {
+    // 自分自身の pid だが、script は vitest のコマンドラインに現れない偽のパス。
+    // pid 再利用で無関係なプロセスを掴むケースを模している。
+    expect(
+      isRunningDaemon(record({ pid: process.pid, script: "/nonexistent/daemon.js" })),
+    ).toBe(false);
+  });
+
+  it("pid が生きていてコマンドラインに script が現れれば動いている", () => {
+    const commandLine = commandLineOf(process.pid) ?? "";
+    const token = commandLine.split(/\s+/).find((part) => part.includes("/")) ?? "node";
+    expect(isRunningDaemon(record({ pid: process.pid, script: token }))).toBe(true);
   });
 });
 ```
@@ -1738,22 +1863,38 @@ Expected: FAIL — `Failed to resolve import "../src/pidfile.js"`
 `src/pidfile.ts`:
 
 ```ts
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export async function readPid(filePath: string): Promise<number | null> {
+export type DaemonRecord = {
+  pid: number;
+  /** デーモンスクリプトの絶対パス。pid 再利用の判別に使う。 */
+  script: string;
+  startedAt: string;
+};
+
+export async function readRecord(filePath: string): Promise<DaemonRecord | null> {
   try {
-    const raw = (await readFile(filePath, "utf8")).trim();
-    const pid = Number(raw);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    if (parsed === null || typeof parsed !== "object") return null;
+    const v = parsed as Record<string, unknown>;
+    if (typeof v.pid !== "number" || !Number.isInteger(v.pid) || v.pid <= 0) return null;
+    if (typeof v.script !== "string" || v.script.length === 0) return null;
+    if (typeof v.startedAt !== "string") return null;
+    return { pid: v.pid, script: v.script, startedAt: v.startedAt };
   } catch {
     return null;
   }
 }
 
-export async function writePid(filePath: string, pid: number): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${pid}\n`, "utf8");
+export async function writeRecord(filePath: string, record: DaemonRecord): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+  await writeFile(filePath, JSON.stringify(record), { encoding: "utf8", mode: 0o600 });
+}
+
+export async function removeRecord(filePath: string): Promise<void> {
+  await rm(filePath, { force: true });
 }
 
 /** シグナル 0 は実際には送られず、プロセスの存在確認だけを行う。 */
@@ -1765,47 +1906,78 @@ export function isAlive(pid: number): boolean {
     return false;
   }
 }
+
+/** 指定 pid のコマンドラインを取る。取れなければ null。macOS / Linux の ps に依存する。 */
+export function commandLineOf(pid: number): string | null {
+  try {
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 記録されたデーモンが本当に動いているか。
+ *
+ * pid の生存確認だけでは、pid が再利用されたときに無関係なプロセスを掴む。
+ * コマンドラインにデーモンスクリプトのパスが現れることまで確かめる。
+ */
+export function isRunningDaemon(record: DaemonRecord | null): boolean {
+  if (record === null) return false;
+  if (!isAlive(record.pid)) return false;
+  const commandLine = commandLineOf(record.pid);
+  return commandLine !== null && commandLine.includes(record.script);
+}
 ```
 
 - [ ] **Step 4: テストが通ることを確認する**
 
 Run: `npx vitest run tests/pidfile.test.ts`
-Expected: PASS(5 tests)
+Expected: PASS(14 tests)
 
-- [ ] **Step 5: ランチャーを実装する**
+- [ ] **Step 5: CLI を実装する**
 
-`src/launcher.ts`:
+`src/cli.ts`:
 
 ```ts
 import { spawn } from "node:child_process";
-import { open, mkdir } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { logPath, pidPath, readPluginEnv } from "./env.js";
-import { isAlive, readPid, writePid } from "./pidfile.js";
+import { ensureStateDir, logPath, pidPath, readPluginEnv } from "./env.js";
+import {
+  isRunningDaemon,
+  readRecord,
+  removeRecord,
+  writeRecord,
+  type DaemonRecord,
+} from "./pidfile.js";
+
+const daemonScript = (): string =>
+  join(dirname(fileURLToPath(import.meta.url)), "daemon.js");
 
 /**
- * [[startup]] から呼ばれる入口。
+ * デーモンを detached で切り離して起動する。
  *
- * herdr の startup hook が子プロセスを待ち合わせるのか、セッション終了時に
- * kill するのかは herdr のバージョンに依存する。デーモンを detached で切り離し、
- * ランチャー自身は即座に終わることで、どちらの挙動でも成立させる。
+ * herdr の startup hook が子プロセスを待ち合わせるのか、セッション終了時に kill
+ * するのかは herdr のバージョンに依存する。切り離して即座に終わることで、
+ * どちらの挙動でも成立させる。
  */
-async function main(): Promise<void> {
-  const env = readPluginEnv(process.env);
-  const pidFile = pidPath(env.stateDir);
-
-  const existing = await readPid(pidFile);
-  if (existing !== null && isAlive(existing)) {
-    process.stdout.write(`auto-tab-name daemon already running (pid ${existing})\n`);
-    return;
+async function start(stateDir: string): Promise<string> {
+  const pidFile = pidPath(stateDir);
+  const existing = await readRecord(pidFile);
+  if (isRunningDaemon(existing)) {
+    return `already running (pid ${existing!.pid})`;
   }
 
-  await mkdir(env.stateDir, { recursive: true });
-  const logFile = await open(logPath(env.stateDir), "a");
-
-  const daemonPath = join(dirname(fileURLToPath(import.meta.url)), "daemon.js");
-  const child = spawn(process.execPath, [daemonPath], {
+  await ensureStateDir(stateDir);
+  const logFile = await open(logPath(stateDir), "a", 0o600);
+  const script = daemonScript();
+  const child = spawn(process.execPath, [script], {
     detached: true,
     stdio: ["ignore", logFile.fd, logFile.fd],
     env: process.env,
@@ -1814,26 +1986,101 @@ async function main(): Promise<void> {
   await logFile.close();
 
   if (child.pid === undefined) throw new Error("failed to spawn the daemon");
-  await writePid(pidFile, child.pid);
-  process.stdout.write(`auto-tab-name daemon started (pid ${child.pid})\n`);
+  const record: DaemonRecord = {
+    pid: child.pid,
+    script,
+    startedAt: new Date().toISOString(),
+  };
+  await writeRecord(pidFile, record);
+  return `started (pid ${child.pid})`;
+}
+
+async function stop(stateDir: string): Promise<string> {
+  const pidFile = pidPath(stateDir);
+  const existing = await readRecord(pidFile);
+  if (!isRunningDaemon(existing)) {
+    await removeRecord(pidFile);
+    return "not running";
+  }
+  process.kill(existing!.pid, "SIGTERM");
+  await removeRecord(pidFile);
+  return `stopped (pid ${existing!.pid})`;
+}
+
+async function status(stateDir: string): Promise<string> {
+  const existing = await readRecord(pidPath(stateDir));
+  if (!isRunningDaemon(existing)) return "not running";
+  return `running (pid ${existing!.pid}, started ${existing!.startedAt})`;
+}
+
+async function main(): Promise<void> {
+  const env = readPluginEnv(process.env);
+  const command = process.argv[2] ?? "start";
+
+  const message =
+    command === "start"
+      ? await start(env.stateDir)
+      : command === "stop"
+        ? await stop(env.stateDir)
+        : command === "status"
+          ? await status(env.stateDir)
+          : null;
+
+  if (message === null) {
+    throw new Error(`unknown command: ${command} (expected start, stop, or status)`);
+  }
+  process.stdout.write(`auto-tab-name: ${message}\n`);
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`auto-tab-name launcher failed: ${String(error)}\n`);
+  process.stderr.write(`auto-tab-name cli failed: ${String(error)}\n`);
   process.exit(1);
 });
 ```
 
-- [ ] **Step 6: ビルドと全テストを通す**
+- [ ] **Step 6: デーモン側の pidfile 後始末を合わせる**
+
+`src/daemon.ts` の終了処理は `unlink(pidPath(...))` を呼んでいる。`removeRecord` に置き換える。
+
+該当行を次のように書き換える:
+
+```ts
+  await removeRecord(pidPath(env.stateDir));
+  log("daemon stopped");
+```
+
+import 文も合わせる(`unlink` は不要になる):
+
+```ts
+import { appendFile } from "node:fs/promises";
+import { removeRecord } from "./pidfile.js";
+```
+
+- [ ] **Step 7: ビルドと全テストを通す**
 
 Run: `npm run build && npx vitest run && npx tsc --noEmit`
-Expected: `dist/launcher.js` と `dist/daemon.js` が生成され、全 50 テスト PASS、型エラーなし
+Expected: `dist/cli.js` と `dist/daemon.js` が生成され、全 59 テスト PASS、型エラーなし
 
-- [ ] **Step 7: commit する**
+- [ ] **Step 8: 手で CLI を確かめる**
 
 ```bash
-git add src/pidfile.ts src/launcher.ts tests/pidfile.test.ts
-git commit -m "feat: デーモンを detached 起動するランチャーを追加"
+export HERDR_SOCKET_PATH="$HOME/.config/herdr/herdr.sock"
+export HERDR_PLUGIN_STATE_DIR=/tmp/auto-tab-name-state
+node dist/cli.js status   # not running
+node dist/cli.js start    # started (pid ...)
+node dist/cli.js status   # running (pid ..., started ...)
+node dist/cli.js start    # already running (pid ...)
+node dist/cli.js stop     # stopped (pid ...)
+node dist/cli.js status   # not running
+```
+
+Expected: 上のコメントどおりの出力になる。`/tmp/auto-tab-name-state/daemon.log` にデーモンのログが出ている。
+
+- [ ] **Step 9: commit する**
+
+```bash
+git add src/pidfile.ts src/cli.ts src/daemon.ts tests/pidfile.test.ts
+git commit -m "feat: デーモンを制御する start/stop/status CLI を追加"
 ```
 
 ---
@@ -1848,12 +2095,12 @@ git commit -m "feat: デーモンを detached 起動するランチャーを追�
 - Delete: `spike/probe.sh`
 
 **Interfaces:**
-- Consumes: `dist/launcher.js`(Task 9)
+- Consumes: `dist/cli.js`(Task 9)
 - Produces: link して動くプラグイン
 
 - [ ] **Step 1: マニフェストを仕上げる**
 
-`herdr-plugin.toml` の内容を次に置き換える(Task 1 のスパイク用 `[[startup]]` を外し、ビルドを宣言する):
+`herdr-plugin.toml` の内容を次に置き換える(Task 1 のスパイク用 `[[startup]]` を外し、ビルドと制御アクションを宣言する):
 
 ```toml
 id = "okonomi.auto-tab-name"
@@ -1869,8 +2116,32 @@ command = ["npm", "ci"]
 [[build]]
 command = ["npm", "run", "build"]
 
+# 常駐デーモンを起動する。cli.js start は冪等なので、二重に走っても害はない。
 [[startup]]
-command = ["node", "dist/launcher.js"]
+command = ["node", "dist/cli.js", "start"]
+
+# startup hook が発火しない環境でも手で起動できるようにする。
+# 先行プラグイン(iurysza/herdr-tab-smart-rename)はこの方式のみで運用している。
+[[actions]]
+id = "start"
+title = "Auto Tab Name: start"
+description = "Start the auto tab name daemon."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "start"]
+
+[[actions]]
+id = "stop"
+title = "Auto Tab Name: stop"
+description = "Stop the auto tab name daemon."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "stop"]
+
+[[actions]]
+id = "status"
+title = "Auto Tab Name: status"
+description = "Report whether the daemon is running."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "status"]
 ```
 
 スパイクの残骸を消す:
@@ -1905,11 +2176,26 @@ herdr server reload-config
 
 - [ ] **Step 4: デーモンを起動して動作を確認する**
 
-herdr を再起動して startup hook を発火させる。発火しない場合はランチャーを直接叩いて確かめる:
+herdr を再起動して startup hook を発火させ、状態を確かめる:
+
+```bash
+herdr plugin action invoke okonomi.auto-tab-name.status
+```
+
+Expected: `running (pid ..., started ...)`。
+
+startup hook が発火しなかった場合(Task 1 のスパイクで確認済みの挙動による)は、アクションから起動する:
+
+```bash
+herdr plugin action invoke okonomi.auto-tab-name.start
+herdr plugin action invoke okonomi.auto-tab-name.status
+```
+
+ログを確認する:
 
 ```bash
 herdr plugin log list --plugin okonomi.auto-tab-name
-cat "${HERDR_PLUGIN_STATE_DIR:-$(herdr plugin config-dir okonomi.auto-tab-name)}/daemon.log"
+cat "$(herdr plugin config-dir okonomi.auto-tab-name)/../state/daemon.log"
 ```
 
 Expected: `daemon started pid=... socket=...` の行がある。
@@ -1970,9 +2256,19 @@ prompt_new_tab_name = false
 
 反映するには `herdr server reload-config` を実行する。
 
+## デーモンの制御
+
+`[[startup]]` から自動で起動するが、手で操作することもできる。
+
+```bash
+herdr plugin action invoke okonomi.auto-tab-name.status
+herdr plugin action invoke okonomi.auto-tab-name.start
+herdr plugin action invoke okonomi.auto-tab-name.stop
+```
+
 ## 仕組み
 
-`[[startup]]` から起動される薄いランチャーが、常駐デーモンを detached で立ち上げる。
+`[[startup]]` から呼ばれる `cli.js start` が、常駐デーモンを detached で立ち上げる。
 デーモンは herdr の Unix socket に 1 秒ごとに `session.snapshot` と `pane.process_info` を
 投げ、タブ名が変わるときだけ `tab.rename` を発行する。
 
@@ -1989,7 +2285,7 @@ herdr にはフォアグラウンドプロセスの変化を通知するイベ�
 cat "$(herdr plugin config-dir okonomi.auto-tab-name)/../state/daemon.log"
 ```
 
-`herdr plugin log list --plugin okonomi.auto-tab-name` で見えるのはランチャーの実行ログで、
+`herdr plugin log list --plugin okonomi.auto-tab-name` で見えるのは `cli.js` の実行ログで、
 デーモン本体の診断には上のファイルを見る。
 
 ## 開発
@@ -2025,11 +2321,15 @@ git commit -m "feat: プラグインマニフェストを仕上げて README を
 | 自動モードのタブだけポーリング、名前が変わるときだけ rename | Task 7 |
 | API エラーの握りつぶし | Task 7 |
 | 30 秒の連続失敗でデーモン終了 | Task 8 |
-| ランチャーと pidfile による単一性 | Task 9 |
+| CLI と pidfile による単一性(pid 再利用ガード込み) | Task 9 |
 | `[[startup]]` の実挙動の確認 | Task 1 |
+| `[[actions]]` による start / stop / status の制御面 | Task 9, Task 10 |
+| state ディレクトリ 0700 / ファイル 0600 / 原子的書き込み | Task 5, Task 8, Task 9 |
 | ログの出力先 | Task 8, Task 10 |
 | `prompt_new_tab_name` の案内 | Task 10 |
 
 **2. Placeholder scan** — 「適切にエラー処理する」「後で実装」の類は無い。すべてのコードステップに実際のコードがある。
 
-**3. Type consistency** — `Foreground` / `TabState` / `TabMode` / `PaneProcessInfo` / `Snapshot` / `SnapshotTab` / `SnapshotPane` / `HerdrApi` の定義箇所と使用箇所を照合済み。関数名は `resolveForeground` / `comparePaneId` / `resolveTabForeground` / `nextMode` / `nextLabel` / `runCycle` / `readPid` / `writePid` / `isAlive` / `readPluginEnv` / `statePath` / `pidPath` / `logPath` で全タスクを通して一貫している。
+**3. Type consistency** — `Foreground` / `TabState` / `TabMode` / `PaneProcessInfo` / `Snapshot` / `SnapshotTab` / `SnapshotPane` / `HerdrApi` / `DaemonRecord` の定義箇所と使用箇所を照合済み。関数名は `resolveForeground` / `comparePaneId` / `resolveTabForeground` / `nextMode` / `nextLabel` / `runCycle` / `readRecord` / `writeRecord` / `removeRecord` / `isAlive` / `commandLineOf` / `isRunningDaemon` / `readPluginEnv` / `ensureStateDir` / `statePath` / `pidPath` / `logPath` で全タスクを通して一貫している。
+
+Task 8 の `daemon.ts` は `unlink(pidPath(...))` を使って書かれるが、`pidfile.ts` が存在しない段階では他に手がない。Task 9 の Step 6 で `removeRecord` に差し替える手順を明示してある。
