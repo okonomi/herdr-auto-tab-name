@@ -77,4 +77,31 @@ describe("SocketClient", () => {
     const client = new SocketClient(join(dir, "missing.sock"));
     await expect(client.request("session.snapshot", {})).rejects.toThrow();
   });
+
+  it("サーバが応答しないままだとタイムアウトで reject する", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "herdr-sock-"));
+    const path = join(dir, "test.sock");
+    server = createServer((socket) => {
+      // 接続は受け付けるが、何も返さず閉じもしない。resume() しないと
+      // ソケットが一時停止状態のままになり、クライアント側の destroy() で
+      // 送られる FIN/RST をこの端が拾わず、afterEach の server.close() が
+      // ハングしてしまうため呼んでおく。
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => server!.listen(path, resolve));
+
+    const client = new SocketClient(path, 50);
+    await expect(client.request("session.snapshot", {})).rejects.toThrow(/timed out/);
+  });
+
+  it("タイムアウトを短く設定していても、正常な通信では毎回解決する", async () => {
+    const path = await startFakeServer((req) => ({ id: req.id, result: { method: req.method } }));
+    const client = new SocketClient(path, 50);
+    await expect(client.request("session.snapshot", {})).resolves.toEqual({
+      method: "session.snapshot",
+    });
+    await expect(client.request("tab.rename", {})).resolves.toEqual({
+      method: "tab.rename",
+    });
+  });
 });

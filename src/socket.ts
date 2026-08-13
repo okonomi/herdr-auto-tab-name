@@ -16,6 +16,8 @@ type Response = {
   error?: { code: string; message: string };
 };
 
+const REQUEST_TIMEOUT_MS = 5_000;
+
 /**
  * herdr の Unix socket クライアント。
  *
@@ -26,7 +28,10 @@ type Response = {
 export class SocketClient {
   private counter = 0;
 
-  constructor(private readonly socketPath: string) {}
+  constructor(
+    private readonly socketPath: string,
+    private readonly timeoutMs: number = REQUEST_TIMEOUT_MS,
+  ) {}
 
   request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const id = `auto-tab-name:${++this.counter}`;
@@ -35,9 +40,14 @@ export class SocketClient {
       let buffer = "";
       let settled = false;
 
+      const timer = setTimeout(() => {
+        fail(new Error(`${method}: timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
       const fail = (error: Error): void => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         socket.destroy();
         reject(error);
       };
@@ -64,6 +74,7 @@ export class SocketClient {
 
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         socket.end();
 
         if (response.error) {
