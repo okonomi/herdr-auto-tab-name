@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { ensureStateDir, logPath, pidPath, readPluginEnv, startLockPath } from "./env.js";
 import {
+  isAlive,
   isRunningDaemon,
   readRecord,
   removeRecord,
@@ -112,6 +113,18 @@ async function start(stateDir: string): Promise<string> {
   });
 }
 
+const STOP_POLL_INTERVAL_MS = 100;
+const STOP_WAIT_TIMEOUT_MS = 10_000;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * デーモンは SIGTERM を受けても即座には終わらない(最大 5 秒のソケット
+ * リクエスト + 1 秒の sleep で最大 6 秒近くかかりうる)。それを待たずに
+ * pidfile を消すと、生きている旧デーモンが自分の終了時処理で「新しい"
+ * start" が書いた」pidfile を無条件に消してしまい、後発デーモンが野良化
+ * する(README/設計の既知の落とし穴)。実際に死ぬまで待ってから消す。
+ */
 async function stop(stateDir: string): Promise<string> {
   const pidFile = pidPath(stateDir);
   const existing = await readRecord(pidFile);
@@ -119,9 +132,20 @@ async function stop(stateDir: string): Promise<string> {
     await removeRecord(pidFile);
     return "not running";
   }
-  process.kill(existing!.pid, "SIGTERM");
+  const pid = existing!.pid;
+  process.kill(pid, "SIGTERM");
+
+  const deadline = Date.now() + STOP_WAIT_TIMEOUT_MS;
+  while (isAlive(pid) && Date.now() < deadline) {
+    await sleep(STOP_POLL_INTERVAL_MS);
+  }
+
+  if (isAlive(pid)) {
+    return `sent SIGTERM (pid ${pid}) but it did not exit within ${STOP_WAIT_TIMEOUT_MS / 1000}s; try again`;
+  }
+
   await removeRecord(pidFile);
-  return `stopped (pid ${existing!.pid})`;
+  return `stopped (pid ${pid})`;
 }
 
 async function status(stateDir: string): Promise<string> {

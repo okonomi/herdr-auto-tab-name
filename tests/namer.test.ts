@@ -68,6 +68,16 @@ describe("resolveForeground", () => {
     expect(resolveForeground(info)).toEqual({ kind: "running", command: "pytest" });
   });
 
+  it("foreground_processes が配列でない(欠けている)ならアイドルとみなす", () => {
+    const info = {
+      pane_id: "w1:p1",
+      shell_pid: 100,
+      foreground_process_group_id: 100,
+      foreground_processes: undefined,
+    } as unknown as PaneProcessInfo;
+    expect(resolveForeground(info)).toEqual({ kind: "idle" });
+  });
+
   it("フォアグラウンドプロセスが空ならアイドルとみなす", () => {
     const info: PaneProcessInfo = {
       pane_id: "w1:p1",

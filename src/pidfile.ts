@@ -45,7 +45,11 @@ export function isAlive(pid: number): boolean {
 /** 指定 pid のコマンドラインを取る。取れなければ null。macOS / Linux の ps に依存する。 */
 export function commandLineOf(pid: number): string | null {
   try {
-    const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+    // -ww: 出力を端末幅で切り詰めない。一部の Linux procps はデフォルトで
+    // 切り詰めるため、それを付けないと長いスクリプトパスが途中で切れて
+    // isRunningDaemon の一致判定が常に false になり、start のたびに
+    // デーモンが重複起動しかねない。
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "command=", "-ww"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();

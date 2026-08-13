@@ -15,7 +15,10 @@ function commandNameOf(process: HerdrProcess): string {
  */
 export function resolveForeground(info: PaneProcessInfo): Foreground {
   const processes = info.foreground_processes;
-  if (processes.length === 0) return { kind: "idle" };
+  // シェル起動前後や死にかけのペインなど、herdr が foreground_processes を
+  // 欠かして(undefined/null)返すことがある。配列でなければ空扱いにして
+  // アイドルとみなす。ここで例外を投げると呼び出し元のタブ処理全体が失敗する。
+  if (!Array.isArray(processes) || processes.length === 0) return { kind: "idle" };
 
   const leader =
     processes.find((p) => p.pid === info.foreground_process_group_id) ??

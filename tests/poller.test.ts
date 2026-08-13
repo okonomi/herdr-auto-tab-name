@@ -5,7 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import { runCycle } from "../src/poller.js";
 import { StateStore } from "../src/state.js";
 import type { HerdrApi } from "../src/api.js";
-import type { PaneProcessInfo, Snapshot, SnapshotPane, SnapshotTab } from "../src/types.js";
+import type {
+  PaneProcessInfo,
+  Snapshot,
+  SnapshotPane,
+  SnapshotTab,
+} from "../src/types.js";
 import { idleFish, runningClaude } from "./fixtures/process-info.js";
 
 const tab = (over: Partial<SnapshotTab> & { tab_id: string }): SnapshotTab => ({
@@ -234,6 +239,128 @@ describe("runCycle", () => {
     await expect(runCycle(api, store, log)).resolves.toBeUndefined();
     expect(store.get("w1:t1")?.lastSetLabel).toBeNull();
     expect(lines.some((line) => line.includes("w1:t1"))).toBe(true);
+  });
+
+  it("自動命名したタブ名を番号へ戻すとリセットとして扱い、直前のコマンド名を忘れる", async () => {
+    const api = fakeApi(
+      { tabs: [tab({ tab_id: "w1:t1", label: "1" })], panes: [pane("w1:p1", "w1:t1")] },
+      { "w1:p1": idleFish },
+    );
+    const store = await emptyStore();
+    store.set("w1:t1", { mode: "auto", lastCommand: "claude", lastSetLabel: "claude" });
+
+    await runCycle(api, store, noop);
+
+    expect(api.renames).toEqual([]);
+    expect(store.get("w1:t1")).toEqual({
+      mode: "auto",
+      lastCommand: null,
+      lastSetLabel: null,
+    });
+  });
+
+  it("番号へ戻した直後でもコマンドが実際に実行中ならリネームを抑制しない", async () => {
+    const api = fakeApi(
+      { tabs: [tab({ tab_id: "w1:t1", label: "1" })], panes: [pane("w1:p1", "w1:t1")] },
+      { "w1:p1": runningClaude },
+    );
+    const store = await emptyStore();
+    store.set("w1:t1", { mode: "auto", lastCommand: "claude", lastSetLabel: "claude" });
+
+    await runCycle(api, store, noop);
+
+    expect(api.renames).toEqual([["w1:t1", "claude"]]);
+    expect(store.get("w1:t1")).toEqual({
+      mode: "auto",
+      lastCommand: "claude",
+      lastSetLabel: "claude",
+    });
+  });
+
+  it("一度も自動命名していない新規タブは番号のままでもリセット扱いにしない", async () => {
+    const api = fakeApi(
+      { tabs: [tab({ tab_id: "w1:t1", label: "1" })], panes: [pane("w1:p1", "w1:t1")] },
+      { "w1:p1": idleFish },
+    );
+    const store = await emptyStore();
+
+    await expect(runCycle(api, store, noop)).resolves.toBeUndefined();
+
+    expect(api.renames).toEqual([]);
+    expect(store.get("w1:t1")).toEqual({
+      mode: "auto",
+      lastCommand: null,
+      lastSetLabel: null,
+    });
+  });
+
+  it("foreground_processes が欠けた壊れたペイン情報があっても、そのタブだけ諦めて他のタブは処理する", async () => {
+    const malformed = {
+      pane_id: "w1:p1",
+      shell_pid: 100,
+      foreground_process_group_id: 100,
+      foreground_processes: undefined,
+    } as unknown as PaneProcessInfo;
+    const api = fakeApi(
+      {
+        tabs: [tab({ tab_id: "w1:t1" }), tab({ tab_id: "w1:t2" })],
+        panes: [pane("w1:p1", "w1:t1"), pane("w1:p2", "w1:t2")],
+      },
+      { "w1:p1": malformed, "w1:p2": runningClaude },
+    );
+    const store = await emptyStore();
+
+    await expect(runCycle(api, store, noop)).resolves.toBeUndefined();
+
+    expect(api.renames).toEqual([["w1:t2", "claude"]]);
+  });
+
+  it("計算したラベルが空文字列ならリネームしない", async () => {
+    const emptyArgv0: PaneProcessInfo = {
+      pane_id: "w1:p1",
+      shell_pid: 100,
+      foreground_process_group_id: 200,
+      foreground_processes: [
+        { pid: 200, name: "?", argv0: "/", argv: ["/"], cmdline: "/", cwd: "/" },
+      ],
+    };
+    const api = fakeApi(
+      { tabs: [tab({ tab_id: "w1:t1" })], panes: [pane("w1:p1", "w1:t1")] },
+      { "w1:p1": emptyArgv0 },
+    );
+    const store = await emptyStore();
+
+    await runCycle(api, store, noop);
+
+    expect(api.renames).toEqual([]);
+  });
+
+  it("64 文字を超えるラベルは切り詰めてからリネームする", async () => {
+    const longName = "a".repeat(100);
+    const longArgv0: PaneProcessInfo = {
+      pane_id: "w1:p1",
+      shell_pid: 100,
+      foreground_process_group_id: 200,
+      foreground_processes: [
+        {
+          pid: 200,
+          name: longName,
+          argv0: longName,
+          argv: [longName],
+          cmdline: longName,
+          cwd: "/",
+        },
+      ],
+    };
+    const api = fakeApi(
+      { tabs: [tab({ tab_id: "w1:t1" })], panes: [pane("w1:p1", "w1:t1")] },
+      { "w1:p1": longArgv0 },
+    );
+    const store = await emptyStore();
+
+    await runCycle(api, store, noop);
+
+    expect(api.renames).toEqual([["w1:t1", "a".repeat(64)]]);
   });
 
   it("消えたタブの状態を捨てる", async () => {

@@ -1,7 +1,7 @@
 import type { Foreground, TabMode, TabState } from "./types.js";
 
 /** herdr が既定で付けるタブ名(タブ番号)かどうか。 */
-function isDefaultLabel(label: string): boolean {
+export function isDefaultLabel(label: string): boolean {
   return /^\d+$/.test(label);
 }
 

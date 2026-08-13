@@ -78,14 +78,29 @@ herdr にはフォアグラウンドプロセスの変化を通知するイベ�
 
 ## トラブルシューティング
 
-デーモンのログはプラグインの state ディレクトリにある。
+デーモンのログ・状態・pid レコードは herdr がプラグインに渡す
+`HERDR_PLUGIN_STATE_DIR` 以下、通常は次の場所にある。
 
 ```bash
-cat "$(herdr plugin config-dir okonomi.auto-tab-name)/../state/daemon.log"
+cat ~/.local/state/herdr/plugins/okonomi.auto-tab-name/daemon.log
 ```
+
+このパスは herdr 側が決めるものでインストールによって変わりうるため、確実に知りたければ
+`HERDR_PLUGIN_STATE_DIR` 環境変数を参照する。
 
 `herdr plugin log list --plugin okonomi.auto-tab-name` で見えるのは `cli.js` の実行ログで、
 デーモン本体の診断には上のファイルを見る。
+
+**`state.json` を消して「リセット」しようとしない。** `state.json` が無いと、番号以外の
+タブ名はすべて「手動で付けた名前」として読み直されるため、削除すると自動命名していた
+タブが軒並み手動固定に固定されてしまう。特定のタブだけ元に戻したいときは、そのタブ名を
+番号にリネームする。
+
+**デーモンは 30 秒間失敗が続くと諦めて終了する。** herdr の再起動、socket の消失、
+スリープからの復帰などで起きうる。デーモンは自分では再起動しないので、`start` アクションで
+起動し直す。
+
+**`herdr plugin unlink` は動いているデーモンを止めない。** 先に `stop` アクションを実行する。
 
 ## 開発
 

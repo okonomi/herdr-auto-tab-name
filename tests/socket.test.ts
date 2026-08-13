@@ -94,6 +94,46 @@ describe("SocketClient", () => {
     await expect(client.request("session.snapshot", {})).rejects.toThrow(/timed out/);
   });
 
+  it("result も error も無いレスポンスは、メソッド名入りのエラーで reject する", async () => {
+    const path = await startFakeServer((req) => ({ id: req.id }));
+    const client = new SocketClient(path);
+    await expect(client.request("tab.rename", {})).rejects.toThrow(/tab\.rename/);
+  });
+
+  it("マルチバイト文字がチャンクの境界で分割されても正しくデコードする", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "herdr-sock-"));
+    const path = join(dir, "test.sock");
+    const label = "実装を進める";
+
+    server = createServer((socket) => {
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) return;
+        const request = JSON.parse(buffer.slice(0, newline)) as { id: string };
+        const payload = Buffer.from(
+          JSON.stringify({ id: request.id, result: { label } }) + "\n",
+          "utf8",
+        );
+        // "進" (U+9032) は utf8 で 3 バイト。その文字の途中で分割して 2 回に分けて書く。
+        const marker = Buffer.from("進", "utf8");
+        const markerIndex = payload.indexOf(marker);
+        const splitAt = markerIndex + 1; // マーカーの 1 バイト目の直後、つまり文字の途中。
+
+        socket.write(payload.subarray(0, splitAt));
+        setTimeout(() => {
+          socket.end(payload.subarray(splitAt));
+        }, 10);
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(path, resolve));
+
+    const client = new SocketClient(path);
+    await expect(client.request("tab.rename", { label })).resolves.toEqual({ label });
+  });
+
   it("タイムアウトを短く設定していても、正常な通信では毎回解決する", async () => {
     const path = await startFakeServer((req) => ({ id: req.id, result: { method: req.method } }));
     const client = new SocketClient(path, 50);
