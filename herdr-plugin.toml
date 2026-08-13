@@ -1,0 +1,39 @@
+id = "okonomi.auto-tab-name"
+name = "Auto Tab Name"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Rename herdr tabs to the foreground command running in them"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["npm", "ci"]
+
+[[build]]
+command = ["npm", "run", "build"]
+
+# 常駐デーモンを起動する。cli.js start は冪等なので、二重に走っても害はない。
+[[startup]]
+command = ["node", "dist/cli.js", "start"]
+
+# startup hook が発火しない環境でも手で起動できるようにする。
+# 先行プラグイン(iurysza/herdr-tab-smart-rename)はこの方式のみで運用している。
+[[actions]]
+id = "start"
+title = "Auto Tab Name: start"
+description = "Start the auto tab name daemon."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "start"]
+
+[[actions]]
+id = "stop"
+title = "Auto Tab Name: stop"
+description = "Stop the auto tab name daemon."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "stop"]
+
+[[actions]]
+id = "status"
+title = "Auto Tab Name: status"
+description = "Report whether the daemon is running."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "status"]
