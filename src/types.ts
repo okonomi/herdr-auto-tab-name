@@ -27,3 +27,24 @@ export type TabState = {
   /** このプラグインが最後に設定したタブ名。手動リネームの検知に使う。 */
   lastSetLabel: string | null;
 };
+
+export type SnapshotTab = {
+  tab_id: string;
+  workspace_id: string;
+  number: number;
+  label: string;
+  focused: boolean;
+  pane_count: number;
+  agent_status: string;
+};
+
+export type SnapshotPane = {
+  pane_id: string;
+  tab_id: string;
+  workspace_id: string;
+};
+
+export type Snapshot = {
+  tabs: SnapshotTab[];
+  panes: SnapshotPane[];
+};
