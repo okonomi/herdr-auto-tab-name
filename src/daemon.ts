@@ -1,8 +1,9 @@
-import { appendFile, unlink } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import { SocketHerdrApi } from "./api.js";
 import { ensureStateDir, logPath, pidPath, readPluginEnv, statePath } from "./env.js";
 import { FailureTracker } from "./failure-tracker.js";
 import { runCycle } from "./poller.js";
+import { removeRecord } from "./pidfile.js";
 import { SocketClient } from "./socket.js";
 import { StateStore } from "./state.js";
 
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
     await sleep(POLL_INTERVAL_MS);
   }
 
-  await unlink(pidPath(env.stateDir)).catch(() => {});
+  await removeRecord(pidPath(env.stateDir));
   log("daemon stopped");
 }
 
