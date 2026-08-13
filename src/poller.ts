@@ -29,10 +29,16 @@ export async function runCycle(
     const stored = store.get(tab.tab_id);
     const mode = nextMode(tab.label, stored);
 
+    // ユーザーが手動固定を解除した(タブ名を番号に戻した)直後は、手動固定の
+    // 間に溜まった古い lastCommand/lastSetLabel を引き継がない。引き継ぐと、
+    // 何時間も前に動いていたコマンド名へ即座に戻ってしまい、ユーザーの
+    // リセット操作が効いていないように見える。
+    const reclaimed = stored?.mode === "manual" && mode === "auto";
+
     const state: TabState = {
       mode,
-      lastCommand: stored?.lastCommand ?? null,
-      lastSetLabel: stored?.lastSetLabel ?? null,
+      lastCommand: reclaimed ? null : (stored?.lastCommand ?? null),
+      lastSetLabel: reclaimed ? null : (stored?.lastSetLabel ?? null),
     };
 
     if (mode === "manual") {
