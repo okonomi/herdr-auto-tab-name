@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveForeground } from "../src/namer.js";
+import { comparePaneId, resolveForeground, resolveTabForeground } from "../src/namer.js";
 import {
   idleFish,
   runningClaude,
@@ -76,5 +76,60 @@ describe("resolveForeground", () => {
       foreground_processes: [],
     };
     expect(resolveForeground(info)).toEqual({ kind: "idle" });
+  });
+});
+
+describe("comparePaneId", () => {
+  it("末尾の数値で比較する(文字列比較では p10 < p2 になってしまう)", () => {
+    expect(comparePaneId("wA:p2", "wA:p10")).toBeLessThan(0);
+    expect(comparePaneId("wA:p10", "wA:p2")).toBeGreaterThan(0);
+    expect(comparePaneId("wA:p3", "wA:p3")).toBe(0);
+  });
+
+  it("数値が取れない場合は文字列として比較する", () => {
+    expect(comparePaneId("wA:pX", "wA:pY")).toBeLessThan(0);
+  });
+});
+
+describe("resolveTabForeground", () => {
+  it("ペインが無ければアイドル", () => {
+    expect(resolveTabForeground([])).toEqual({ kind: "idle" });
+  });
+
+  it("全ペインがアイドルならアイドル", () => {
+    expect(resolveTabForeground([idleFish, { ...idleFish, pane_id: "w6:p2" }])).toEqual({
+      kind: "idle",
+    });
+  });
+
+  it("実行中のペインがあればそれを優先する", () => {
+    expect(
+      resolveTabForeground([idleFish, { ...runningClaude, pane_id: "w6:p2" }]),
+    ).toEqual({ kind: "running", command: "claude" });
+  });
+
+  it("実行中が複数あれば pane_id の数値順で最初を採る", () => {
+    const p10: PaneProcessInfo = { ...runningClaude, pane_id: "w6:p10" };
+    const p2: PaneProcessInfo = {
+      ...runningClaudeWithCaffeinate,
+      pane_id: "w6:p2",
+    };
+    expect(resolveTabForeground([p10, p2])).toEqual({
+      kind: "running",
+      command: "claude",
+    });
+
+    const vim: PaneProcessInfo = {
+      pane_id: "w6:p2",
+      shell_pid: 100,
+      foreground_process_group_id: 200,
+      foreground_processes: [
+        { pid: 200, name: "vim", argv0: "vim", argv: ["vim"], cmdline: "vim", cwd: "/" },
+      ],
+    };
+    expect(resolveTabForeground([p10, vim])).toEqual({
+      kind: "running",
+      command: "vim",
+    });
   });
 });

@@ -25,3 +25,35 @@ export function resolveForeground(info: PaneProcessInfo): Foreground {
 
   return { kind: "running", command: commandNameOf(leader) };
 }
+
+/**
+ * pane_id を並び順として比較する。"wA:p10" の末尾の数値で比べるため、
+ * 単純な文字列比較で p10 が p2 より前に来る問題を避ける。
+ */
+export function comparePaneId(a: string, b: string): number {
+  const numberOf = (id: string): number | null => {
+    const match = /(\d+)$/.exec(id);
+    return match ? Number(match[1]) : null;
+  };
+  const na = numberOf(a);
+  const nb = numberOf(b);
+  if (na !== null && nb !== null) return na - nb;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * タブのフォアグラウンド状態を決める。実行中のペインを優先し、
+ * 複数あれば pane_id の若い方を代表とする。
+ */
+export function resolveTabForeground(infos: PaneProcessInfo[]): Foreground {
+  const running = infos
+    .map((info) => ({ info, foreground: resolveForeground(info) }))
+    .filter(
+      (entry): entry is { info: PaneProcessInfo; foreground: { kind: "running"; command: string } } =>
+        entry.foreground.kind === "running",
+    )
+    .sort((x, y) => comparePaneId(x.info.pane_id, y.info.pane_id));
+
+  const first = running[0];
+  return first ? first.foreground : { kind: "idle" };
+}
