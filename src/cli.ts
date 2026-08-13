@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { open, rm, stat, type FileHandle } from "node:fs/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { ensureStateDir, logPath, pidPath, readPluginEnv, startLockPath } from "./env.js";
 import {
@@ -148,13 +149,22 @@ async function main(): Promise<void> {
   process.stdout.write(`auto-tab-name: ${message}\n`);
 }
 
-// `withStartLock` をテストからインポートしたときに CLI 本体が動いてしまわない
-// よう、このファイルがエントリポイントとして直接実行された場合にのみ main を
-// 呼ぶ。
-const isMainModule =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+/**
+ * このファイルが直接実行されたかを判定する。
+ * symlink 経由で起動された場合、import.meta.url は実体パスに解決される一方
+ * process.argv[1] は symlink のパスのまま渡るため、両者を realpath に揃えて比較する。
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
 
-if (isMainModule) {
+if (isMainModule()) {
   main().catch((error: unknown) => {
     process.stderr.write(`auto-tab-name cli failed: ${String(error)}\n`);
     process.exit(1);

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,12 +69,15 @@ describe("withStartLock", () => {
   });
 
   it("EEXIST 以外のエラーは in progress にせずそのまま伝播する", async () => {
-    const root = await tempStateDir();
-    const blockerFile = join(root, "not-a-dir");
-    await writeFile(blockerFile, "blocker", "utf8");
-    // 親のパスセグメントがファイルなので、state ディレクトリの作成に失敗する。
-    const stateDir = join(blockerFile, "state");
-
-    await expect(withStartLock(stateDir, async () => "ok")).rejects.toThrow();
+    // state ディレクトリ自体は(既に存在するので)作れるが、書き込み権限を外して
+    // open(lockFile, "wx") 自体を EACCES で失敗させる。これで
+    // tryAcquireStartLock の「EEXIST 以外は投げる」分岐を直接通す。
+    const stateDir = await tempStateDir();
+    await chmod(stateDir, 0o500);
+    try {
+      await expect(withStartLock(stateDir, async () => "ok")).rejects.toThrow();
+    } finally {
+      await chmod(stateDir, 0o700);
+    }
   });
 });
