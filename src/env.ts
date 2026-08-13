@@ -18,6 +18,7 @@ export function readPluginEnv(env: NodeJS.ProcessEnv): PluginEnv {
 export const statePath = (stateDir: string): string => join(stateDir, "state.json");
 export const pidPath = (stateDir: string): string => join(stateDir, "daemon.json");
 export const logPath = (stateDir: string): string => join(stateDir, "daemon.log");
+export const startLockPath = (stateDir: string): string => join(stateDir, "start.lock");
 
 /** state ディレクトリを本人だけが読める権限で用意する。 */
 export async function ensureStateDir(stateDir: string): Promise<void> {
