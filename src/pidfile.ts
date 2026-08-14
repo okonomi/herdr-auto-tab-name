@@ -32,6 +32,23 @@ export async function removeRecord(filePath: string): Promise<void> {
   await rm(filePath, { force: true });
 }
 
+/**
+ * 記録が指定した pid のものであるときだけ消す。
+ *
+ * 無条件に消すと、record を読んでから消すまでの間に別経路の start が
+ * 新しいデーモンを立てていた場合、その新デーモンの record を巻き添えで
+ * 消してしまう。そうなった新デーモンは status からも stop からも見えず、
+ * ユーザーのタブを書き換え続けるのに kill 以外の停止手段が無くなる。
+ *
+ * 読めない record は誰のものか判断できないため残す。start は record が
+ * 読めなければ新しく上書きするので、残しても起動を妨げない。
+ */
+export async function removeOwnedRecord(filePath: string, pid: number): Promise<void> {
+  const record = await readRecord(filePath);
+  if (record === null || record.pid !== pid) return;
+  await removeRecord(filePath);
+}
+
 /** シグナル 0 は実際には送られず、プロセスの存在確認だけを行う。 */
 export function isAlive(pid: number): boolean {
   try {

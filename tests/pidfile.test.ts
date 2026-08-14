@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   isAlive,
   isRunningDaemon,
   readRecord,
+  removeOwnedRecord,
   removeRecord,
   writeRecord,
   type DaemonRecord,
@@ -100,5 +101,36 @@ describe("isRunningDaemon", () => {
     const commandLine = commandLineOf(process.pid) ?? "";
     const token = commandLine.split(/\s+/).find((part) => part.includes("/")) ?? "node";
     expect(isRunningDaemon(record({ pid: process.pid, script: token }))).toBe(true);
+  });
+});
+
+describe("removeOwnedRecord", () => {
+  it("自分の pid が記録されていれば消す", async () => {
+    const path = await tempPath();
+    await writeRecord(path, record({ pid: 4242 }));
+    await removeOwnedRecord(path, 4242);
+    expect(await readRecord(path)).toBeNull();
+  });
+
+  it("別の pid が記録されていれば消さない", async () => {
+    // stop が SIGTERM を送ってから相手が死ぬまでの間に別経路の start が走り、
+    // 新しいデーモンの record が書かれた状況。これを消すと新デーモンが
+    // status からも stop からも見えない孤児になる。
+    const path = await tempPath();
+    const other = record({ pid: 9999 });
+    await writeRecord(path, other);
+    await removeOwnedRecord(path, 4242);
+    expect(await readRecord(path)).toEqual(other);
+  });
+
+  it("ファイルが無くてもエラーにしない", async () => {
+    await expect(removeOwnedRecord(await tempPath(), 4242)).resolves.toBeUndefined();
+  });
+
+  it("壊れた record は誰のものか判断できないので消さない", async () => {
+    const path = await tempPath();
+    await writeFile(path, "{ not json", "utf8");
+    await removeOwnedRecord(path, 4242);
+    expect(await readFile(path, "utf8")).toBe("{ not json");
   });
 });

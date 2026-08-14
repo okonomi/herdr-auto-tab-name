@@ -3,7 +3,7 @@ import { SocketHerdrApi } from "./api.js";
 import { ensureStateDir, logPath, pidPath, readPluginEnv, statePath } from "./env.js";
 import { FailureTracker } from "./failure-tracker.js";
 import { runCycle } from "./poller.js";
-import { readRecord, removeRecord } from "./pidfile.js";
+import { removeOwnedRecord } from "./pidfile.js";
 import { SocketClient } from "./socket.js";
 import { StateStore } from "./state.js";
 
@@ -55,11 +55,7 @@ async function main(): Promise<void> {
   // pidfile には後発のデーモンの記録が上書きされている。無条件に消すと、
   // その後発デーモンが自分の記録を失って野良プロセス化してしまうため、
   // pidfile が今も自分自身を指している場合に限って消す。
-  const pidFile = pidPath(env.stateDir);
-  const record = await readRecord(pidFile);
-  if (record !== null && record.pid === process.pid) {
-    await removeRecord(pidFile);
-  }
+  await removeOwnedRecord(pidPath(env.stateDir), process.pid);
   log("daemon stopped");
 }
 

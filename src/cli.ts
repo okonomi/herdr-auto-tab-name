@@ -8,7 +8,7 @@ import {
   isAlive,
   isRunningDaemon,
   readRecord,
-  removeRecord,
+  removeOwnedRecord,
   writeRecord,
   type DaemonRecord,
 } from "./pidfile.js";
@@ -129,7 +129,9 @@ async function stop(stateDir: string): Promise<string> {
   const pidFile = pidPath(stateDir);
   const existing = await readRecord(pidFile);
   if (!isRunningDaemon(existing)) {
-    await removeRecord(pidFile);
+    // 死んだデーモンの record だけを片付ける。読めない record や、この直後に
+    // 別経路の start が書いた record は他人のものなので触らない。
+    if (existing !== null) await removeOwnedRecord(pidFile, existing.pid);
     return "not running";
   }
   const pid = existing!.pid;
@@ -144,7 +146,7 @@ async function stop(stateDir: string): Promise<string> {
     return `sent SIGTERM (pid ${pid}) but it did not exit within ${STOP_WAIT_TIMEOUT_MS / 1000}s; try again`;
   }
 
-  await removeRecord(pidFile);
+  await removeOwnedRecord(pidFile, pid);
   return `stopped (pid ${pid})`;
 }
 
