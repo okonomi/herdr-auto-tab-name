@@ -85,14 +85,26 @@ herdr 0.8.0 / macOS で実際に確認した挙動。
 
 ## state ディレクトリ
 
-デーモンの状態は `${HERDR_PLUGIN_STATE_DIR}` 以下に置く。
+デーモンの状態は `${HERDR_PLUGIN_STATE_DIR}` 以下に置く。`<key>` は接続先 socket
+パスの SHA-256 の先頭 8 文字。
 
 | ファイル | 内容 |
 | --- | --- |
-| `state.json` | タブごとの自動/手動モードと直前のコマンド名 |
-| `daemon.json` | 起動中デーモンの pid レコード |
-| `daemon.log` | デーモンのログ |
-| `start.lock` | `start` の多重実行を防ぐための排他ロック |
+| `state-<key>.json` | タブごとの自動/手動モードと直前のコマンド名 |
+| `daemon-<key>.json` | 起動中デーモンの pid レコード |
+| `daemon-<key>.log` | デーモンのログ |
+| `start-<key>.lock` | `start` の多重実行を防ぐための排他ロック |
+
+ファイル名を socket ごとに分けているのは、herdr の名前付きセッション
+(`herdr --session <name>`)に対応するため。セッションはそれぞれ独自の socket を
+持つが `HERDR_PLUGIN_STATE_DIR` はセッションを跨いで共有されるので、名前を
+分けないと 2 つめのセッションの `start` が 1 つめのデーモンの pid レコードを見て
+「もう動いている」と誤判断し、そのセッションではタブ名が一切更新されない。
+`state` も分ける必要がある。タブ ID (`w6:t1` など) はセッションを跨いで重複するため、
+共有すると別セッションの同じ ID のタブの状態を上書きしてしまう。
+
+セッションを削除しても、そのセッションの `state-<key>.json` と `daemon-<key>.log` は
+残る(pid レコードはデーモンが終了時に自分で消す)。害はないが、気になるなら手で消す。
 
 ## トラブルシューティング
 
@@ -100,7 +112,8 @@ herdr 0.8.0 / macOS で実際に確認した挙動。
 `HERDR_PLUGIN_STATE_DIR` 以下、通常は次の場所にある。
 
 ```bash
-cat ~/.local/state/herdr/plugins/okonomi.auto-tab-name/daemon.log
+ls  ~/.local/state/herdr/plugins/okonomi.auto-tab-name/
+cat ~/.local/state/herdr/plugins/okonomi.auto-tab-name/daemon-<key>.log
 ```
 
 このパスは herdr 側が決めるものでインストールによって変わりうるため、確実に知りたければ
@@ -109,7 +122,7 @@ cat ~/.local/state/herdr/plugins/okonomi.auto-tab-name/daemon.log
 `herdr plugin log list --plugin okonomi.auto-tab-name` で見えるのは `cli.js` の実行ログで、
 デーモン本体の診断には上のファイルを見る。
 
-**`state.json` を消して「リセット」しようとしない。** `state.json` が無いと、番号以外の
+**`state-<key>.json` を消して「リセット」しようとしない。** これが無いと、番号以外の
 タブ名はすべて「手動で付けた名前」として読み直されるため、削除すると自動命名していた
 タブが軒並み手動固定に固定されてしまう。特定のタブだけ元に戻したいときは、そのタブ名を
 番号にリネームする。

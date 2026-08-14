@@ -3,7 +3,14 @@ import { realpathSync } from "node:fs";
 import { open, rm, stat, type FileHandle } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { ensureStateDir, logPath, pidPath, readPluginEnv, startLockPath } from "./env.js";
+import {
+  ensureStateDir,
+  logPath,
+  pidPath,
+  readPluginEnv,
+  startLockPath,
+  type PluginEnv,
+} from "./env.js";
 import {
   isAlive,
   isRunningDaemon,
@@ -44,11 +51,11 @@ async function tryAcquireStartLock(lockFile: string): Promise<FileHandle | null>
  * みなして奪い、1 回だけ再試行する。それでも取れなければ諦める。
  */
 export async function withStartLock<T>(
-  stateDir: string,
+  env: PluginEnv,
   body: () => Promise<T>,
 ): Promise<T | "start already in progress"> {
-  await ensureStateDir(stateDir);
-  const lockFile = startLockPath(stateDir);
+  await ensureStateDir(env.stateDir);
+  const lockFile = startLockPath(env);
 
   let handle = await tryAcquireStartLock(lockFile);
   if (handle === null) {
@@ -83,16 +90,16 @@ export async function withStartLock<T>(
  * するのかは herdr のバージョンに依存する。切り離して即座に終わることで、
  * どちらの挙動でも成立させる。
  */
-async function start(stateDir: string): Promise<string> {
-  return withStartLock(stateDir, async () => {
-    const pidFile = pidPath(stateDir);
+async function start(env: PluginEnv): Promise<string> {
+  return withStartLock(env, async () => {
+    const pidFile = pidPath(env);
     const existing = await readRecord(pidFile);
     if (isRunningDaemon(existing)) {
       return `already running (pid ${existing!.pid})`;
     }
 
-    await ensureStateDir(stateDir);
-    const logFile = await open(logPath(stateDir), "a", 0o600);
+    await ensureStateDir(env.stateDir);
+    const logFile = await open(logPath(env), "a", 0o600);
     const script = daemonScript();
     const child = spawn(process.execPath, [script], {
       detached: true,
@@ -125,8 +132,8 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * start" が書いた」pidfile を無条件に消してしまい、後発デーモンが野良化
  * する(README/設計の既知の落とし穴)。実際に死ぬまで待ってから消す。
  */
-async function stop(stateDir: string): Promise<string> {
-  const pidFile = pidPath(stateDir);
+async function stop(env: PluginEnv): Promise<string> {
+  const pidFile = pidPath(env);
   const existing = await readRecord(pidFile);
   if (!isRunningDaemon(existing)) {
     // 死んだデーモンの record だけを片付ける。読めない record や、この直後に
@@ -150,8 +157,8 @@ async function stop(stateDir: string): Promise<string> {
   return `stopped (pid ${pid})`;
 }
 
-async function status(stateDir: string): Promise<string> {
-  const existing = await readRecord(pidPath(stateDir));
+async function status(env: PluginEnv): Promise<string> {
+  const existing = await readRecord(pidPath(env));
   if (!isRunningDaemon(existing)) return "not running";
   return `running (pid ${existing!.pid}, started ${existing!.startedAt})`;
 }
@@ -162,11 +169,11 @@ async function main(): Promise<void> {
 
   const message =
     command === "start"
-      ? await start(env.stateDir)
+      ? await start(env)
       : command === "stop"
-        ? await stop(env.stateDir)
+        ? await stop(env)
         : command === "status"
-          ? await status(env.stateDir)
+          ? await status(env)
           : null;
 
   if (message === null) {

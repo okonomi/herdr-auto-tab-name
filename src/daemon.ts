@@ -15,7 +15,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 async function main(): Promise<void> {
   const env = readPluginEnv(process.env);
   await ensureStateDir(env.stateDir);
-  const file = logPath(env.stateDir);
+  const file = logPath(env);
   const log = (message: string): void => {
     void appendFile(file, `${new Date().toISOString()} ${message}\n`, {
       encoding: "utf8",
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   };
 
   const api = new SocketHerdrApi(new SocketClient(env.socketPath));
-  const store = await StateStore.load(statePath(env.stateDir));
+  const store = await StateStore.load(statePath(env));
   const failures = new FailureTracker(FAILURE_LIMIT_MS);
 
   let running = true;
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   // pidfile には後発のデーモンの記録が上書きされている。無条件に消すと、
   // その後発デーモンが自分の記録を失って野良プロセス化してしまうため、
   // pidfile が今も自分自身を指している場合に限って消す。
-  await removeOwnedRecord(pidPath(env.stateDir), process.pid);
+  await removeOwnedRecord(pidPath(env), process.pid);
   log("daemon stopped");
 }
 
