@@ -5,8 +5,11 @@ min_herdr_version = "0.8.0"
 description = "Rename herdr tabs to the foreground command running in them"
 platforms = ["macos", "linux"]
 
+# --include=dev を明示する。ビルドに使う tsc は devDependency なので、
+# NODE_ENV=production が設定された環境では既定の npm ci が devDependencies を
+# 省き、dist/ が生成されないまま install が「成功」してしまう。
 [[build]]
-command = ["npm", "ci"]
+command = ["npm", "ci", "--include=dev"]
 
 [[build]]
 command = ["npm", "run", "build"]

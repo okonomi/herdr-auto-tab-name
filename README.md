@@ -20,8 +20,13 @@ tmux の `automatic-rename` に相当する振る舞いを herdr にもたらす
 ## インストール
 
 ```bash
-herdr plugin install <このリポジトリ>
+herdr plugin install okonomi/herdr-auto-tab-name
 ```
+
+インストール先のマシンに **Node.js 20 以上と npm** が必要。`herdr plugin install` は
+マニフェストの `[[build]]` を実行して `dist/` を生成するため、Node が無いと
+プラグインは入っても起動しない。対応環境は macOS と Linux(Unix socket と `ps` に
+依存するため Windows は対象外)。
 
 ローカルで開発する場合:
 
@@ -42,6 +47,16 @@ prompt_new_tab_name = false
 ```
 
 反映するには `herdr server reload-config` を実行する。
+
+## 複数マシンで使う
+
+プラグインのコマンドは **herdr サーバーが動いているマシンで実行される**。デーモンも
+そこに常駐し、そのマシンの socket に繋ぐ。したがって:
+
+- **マシンごとに個別にインストールする。** 設定や状態はマシン間で共有されない
+- **`herdr --remote <ssh-target>` で繋ぐ場合は、接続先(サーバー側)にインストールする。**
+  手元のマシンには何も要らない。タブ名はサーバー側で書き換わるので、同じセッションに
+  繋いでいる全クライアントに反映される
 
 ## デーモンの制御
 
