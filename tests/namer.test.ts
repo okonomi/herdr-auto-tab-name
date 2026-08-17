@@ -4,8 +4,29 @@ import {
   idleFish,
   runningClaude,
   runningClaudeWithCaffeinate,
+  runningPodmanCompose,
 } from "./fixtures/process-info.js";
-import type { PaneProcessInfo } from "../src/types.js";
+import type { HerdrProcess, PaneProcessInfo } from "../src/types.js";
+
+/** argv0 と argv だけを差し替えた、実行中ペインを組み立てる。 */
+function runningPane(process: Partial<HerdrProcess>): PaneProcessInfo {
+  return {
+    pane_id: "w1:p1",
+    shell_pid: 100,
+    foreground_process_group_id: 200,
+    foreground_processes: [
+      {
+        pid: 200,
+        name: "x",
+        argv0: "x",
+        argv: ["x"],
+        cmdline: "x",
+        cwd: "/",
+        ...process,
+      },
+    ],
+  };
+}
 
 describe("resolveForeground", () => {
   it("シェル自身がフォアグラウンドならアイドルとみなす", () => {
@@ -66,6 +87,47 @@ describe("resolveForeground", () => {
       ],
     };
     expect(resolveForeground(info)).toEqual({ kind: "running", command: "pytest" });
+  });
+
+  it("argv0 がインタプリタなら argv[1] のスクリプト名を採る", () => {
+    expect(resolveForeground(runningPodmanCompose)).toEqual({
+      kind: "running",
+      command: "podman-compose",
+    });
+  });
+
+  it("バージョン付きのインタプリタ名も剥がす", () => {
+    const info = runningPane({
+      argv0: "/usr/bin/python3.14",
+      argv: ["/usr/bin/python3.14", "./scripts/deploy"],
+    });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "deploy" });
+  });
+
+  it("ruby のスクリプトでもスクリプト名を採る", () => {
+    const info = runningPane({
+      argv0: "/usr/bin/ruby",
+      argv: ["/usr/bin/ruby", "bin/setup"],
+    });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "setup" });
+  });
+
+  it("argv[1] がフラグならインタプリタ名のままにする", () => {
+    const info = runningPane({
+      argv0: "/usr/bin/python3",
+      argv: ["/usr/bin/python3", "-m", "http.server"],
+    });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "python3" });
+  });
+
+  it("引数なしのインタプリタ(REPL)はインタプリタ名のままにする", () => {
+    const info = runningPane({ argv0: "/usr/bin/python3", argv: ["/usr/bin/python3"] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "python3" });
+  });
+
+  it("インタプリタでなければ引数があっても argv0 を使う", () => {
+    const info = runningPane({ argv0: "vim", argv: ["vim", "foo.txt"] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "vim" });
   });
 
   it("foreground_processes が配列でない(欠けている)ならアイドルとみなす", () => {
