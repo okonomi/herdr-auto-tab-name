@@ -1,9 +1,32 @@
 import type { Foreground, HerdrProcess, PaneProcessInfo } from "./types.js";
 
-/** argv0 を表示用のコマンド名に正規化する。ログインシェルの "-fish" や絶対パスを均す。 */
+/**
+ * argv0 がインタプリタ本体かどうか。shebang 付きスクリプトを実行すると exec されるのは
+ * インタプリタなので、argv0 の basename はスクリプト名にならない。
+ *
+ * 構造からは見分けられないため名前で当てるしかない。macOS の framework build は
+ * 起動時に自分を Python.app として再 exec するので、大文字始まりの "Python" も拾う。
+ */
+const INTERPRETER = /^(python|Python)[\d.]*$|^(ruby|node|perl|bash|sh|zsh|php)$/;
+
+function baseNameOf(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+/**
+ * argv0 を表示用のコマンド名に正規化する。ログインシェルの "-fish" や絶対パスを均す。
+ * インタプリタなら argv[1] のスクリプト名に読み替える。
+ */
 function commandNameOf(process: HerdrProcess): string {
-  const withoutDir = process.argv0.split("/").pop() ?? process.argv0;
-  return withoutDir.replace(/^-/, "");
+  const name = baseNameOf(process.argv0).replace(/^-/, "");
+  if (!INTERPRETER.test(name)) return name;
+
+  // python -m http.server や引数なしの REPL のように argv[1] がスクリプトパスでない
+  // ケースは読み替えず、インタプリタ名のままにする。
+  const script = process.argv[1];
+  if (script === undefined || script === "" || script.startsWith("-")) return name;
+
+  return baseNameOf(script);
 }
 
 /**

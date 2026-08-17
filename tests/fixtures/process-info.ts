@@ -34,6 +34,33 @@ export const runningClaude: PaneProcessInfo = {
   ],
 };
 
+/**
+ * shebang 付きスクリプト (podman-compose)。exec されるのはインタプリタ本体なので
+ * argv0 はインタプリタのパスになり、スクリプト名は argv[1] 側にある。
+ * macOS の framework build は自分を Python.app として再 exec するため basename が "Python" になる。
+ */
+export const runningPodmanCompose: PaneProcessInfo = {
+  pane_id: "w1:p2",
+  shell_pid: 5357,
+  foreground_process_group_id: 67420,
+  foreground_processes: [
+    {
+      pid: 67420,
+      name: "Python",
+      argv0:
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python",
+      argv: [
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python",
+        "/opt/homebrew/bin/podman-compose",
+        "up",
+      ],
+      cmdline:
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /opt/homebrew/bin/podman-compose up",
+      cwd: "/Users/okonomi/src/github.com/okonomi/herdr-auto-tab-name",
+    },
+  ],
+};
+
 /** claude が caffeinate を起動した入れ子。プロセスグループのリーダーは claude 側。 */
 export const runningClaudeWithCaffeinate: PaneProcessInfo = {
   pane_id: "wA:p1",
