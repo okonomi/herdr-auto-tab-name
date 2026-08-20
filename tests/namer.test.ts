@@ -130,6 +130,36 @@ describe("resolveForeground", () => {
     expect(resolveForeground(info)).toEqual({ kind: "running", command: "vim" });
   });
 
+  it("setproctitle で書き換えられた argv0 は先頭のトークンを採る", () => {
+    const argv0 = "puma 6.4.2 (tcp://0.0.0.0:3000) [myapp]";
+    const info = runningPane({ argv0, argv: [argv0, ""] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "puma" });
+  });
+
+  it("書き換えられた argv0 の末尾のコロンを落とす", () => {
+    const argv0 = "gunicorn: master [myapp]";
+    const info = runningPane({ argv0, argv: [argv0, ""] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "gunicorn" });
+  });
+
+  it("書き換えられた argv0 の前後の空白を落とす", () => {
+    const argv0 = "postgres: checkpointer ";
+    const info = runningPane({ argv0, argv: [argv0, ""] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "postgres" });
+  });
+
+  it("空白を含む絶対パスは書き換えとみなさない", () => {
+    const argv0 = "/Users/me/My Scripts/run.sh";
+    const info = runningPane({ argv0, argv: [argv0] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "run.sh" });
+  });
+
+  it("空白を含む相対パスは書き換えとみなさない", () => {
+    const argv0 = "./My Scripts/run.sh";
+    const info = runningPane({ argv0, argv: [argv0] });
+    expect(resolveForeground(info)).toEqual({ kind: "running", command: "run.sh" });
+  });
+
   it("foreground_processes が配列でない(欠けている)ならアイドルとみなす", () => {
     const info = {
       pane_id: "w1:p1",
