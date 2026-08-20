@@ -14,10 +14,33 @@ function baseNameOf(path: string): string {
 }
 
 /**
+ * setproctitle 系で argv0 を書き換えたプロセスから、表示用のコマンド名を採る。
+ * 書き換えられていなければ null。
+ *
+ * puma や gunicorn のようにインタプリタが起動するサーバでは、p_comm も実行ファイルの
+ * パスもインタプリタ名(ruby / python)にしかならず、argv[1] は書き換えで潰れている。
+ * 一方どの実装も "puma 6.4.2 (tcp://...)" "gunicorn: master [app]" "postgres: checkpointer"
+ * のようにコマンド名を先頭に置くので、そこだけを採る。
+ *
+ * 空白を含む argv0 には "/Applications/Google Chrome.app/..." のようなスペース入りの
+ * パスもある。実測したかぎり後者は必ず先頭のトークンにパス区切りを含むので、それで分ける。
+ */
+function rewrittenTitleNameOf(argv0: string): string | null {
+  const title = argv0.trim();
+  const head = title.split(/\s/)[0] ?? "";
+  if (head === "" || head === title || head.includes("/")) return null;
+  return head.replace(/:$/, "");
+}
+
+/**
  * argv0 を表示用のコマンド名に正規化する。ログインシェルの "-fish" や絶対パスを均す。
- * インタプリタなら argv[1] のスクリプト名に読み替える。
+ * setproctitle で書き換えられていればその先頭のトークンを、インタプリタなら
+ * argv[1] のスクリプト名に読み替える。
  */
 function commandNameOf(process: HerdrProcess): string {
+  const rewritten = rewrittenTitleNameOf(process.argv0);
+  if (rewritten !== null) return rewritten;
+
   const name = baseNameOf(process.argv0).replace(/^-/, "");
   if (!INTERPRETER.test(name)) return name;
 
