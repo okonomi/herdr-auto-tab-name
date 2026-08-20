@@ -6,6 +6,7 @@ import {
   commandLineOf,
   isAlive,
   isRunningDaemon,
+  isStaleBuild,
   readRecord,
   removeOwnedRecord,
   removeRecord,
@@ -46,6 +47,25 @@ describe("pidfile", () => {
     const path = await tempPath();
     await writeFile(path, JSON.stringify({ pid: "abc" }), "utf8");
     expect(await readRecord(path)).toBeNull();
+  });
+
+  it("buildStamp を書いて読み戻せる", async () => {
+    const path = await tempPath();
+    const withStamp = record({ buildStamp: "1755000000000" });
+    await writeRecord(path, withStamp);
+    expect(await readRecord(path)).toEqual(withStamp);
+  });
+
+  it("buildStamp を持たない古い record も読める", async () => {
+    const path = await tempPath();
+    await writeFile(
+      path,
+      JSON.stringify({ pid: 4242, script: "/opt/plugin/dist/daemon.js", startedAt: "x" }),
+      "utf8",
+    );
+    const read = await readRecord(path);
+    expect(read?.pid).toBe(4242);
+    expect(read?.buildStamp).toBeUndefined();
   });
 
   it("消したあとは null になる", async () => {
@@ -132,5 +152,27 @@ describe("removeOwnedRecord", () => {
     await writeFile(path, "{ not json", "utf8");
     await removeOwnedRecord(path, 4242);
     expect(await readFile(path, "utf8")).toBe("{ not json");
+  });
+});
+
+describe("isStaleBuild", () => {
+  it("記録された buildStamp が現在の値と同じなら古くない", () => {
+    expect(isStaleBuild(record({ buildStamp: "100" }), "100")).toBe(false);
+  });
+
+  it("記録された buildStamp が現在の値と違えば古い", () => {
+    expect(isStaleBuild(record({ buildStamp: "100" }), "200")).toBe(true);
+  });
+
+  it("ビルドが巻き戻って値が古くなった場合も入れ替えの対象にする", () => {
+    // 再インストールで mtime が過去の値に戻ることがある。大小比較ではなく
+    // 一致で見るのは、この向きの変化も拾うため。
+    expect(isStaleBuild(record({ buildStamp: "200" }), "100")).toBe(true);
+  });
+
+  it("buildStamp を持たない古い record は古いとみなす", () => {
+    // この仕組みが入る前に起動したデーモン。いつのコードで走っているか
+    // 分からないので、一度だけ入れ替える。
+    expect(isStaleBuild(record(), "100")).toBe(true);
   });
 });

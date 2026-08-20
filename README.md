@@ -65,6 +65,7 @@ prompt_new_tab_name = false
 ```bash
 herdr plugin action invoke okonomi.auto-tab-name.status
 herdr plugin action invoke okonomi.auto-tab-name.start
+herdr plugin action invoke okonomi.auto-tab-name.restart
 herdr plugin action invoke okonomi.auto-tab-name.stop
 ```
 
@@ -98,6 +99,22 @@ herdr 0.8.0 / macOS で実際に確認した挙動。
 逆に、デーモンが終了したあと herdr が動き続けている間は、何も自動では復帰させない。
 タブ名が更新されなくなったら `status` で確認し、`start` で起動する。
 
+## プラグインを更新したとき
+
+Node は起動時にモジュールを読み込むので、`dist/` を上書きしても走っているデーモンの
+コードは差し替わらない。そのため `start` は、走っているデーモンが今ディスクにある
+ビルドのものかを確認する。`dist/*.js` の最新 mtime を起動時に pidfile へ記録しておき、
+次の `start` で取り直した値と一致しなければ、古いデーモンを落として起動し直す。
+
+`[[startup]]` は毎セッション `start` を呼ぶので、**更新後の最初のセッションで自動的に
+入れ替わる**。そのセッションでは `replaced pid <old>; started (pid <new>)` が返る。
+
+今すぐ反映したいときは `restart` を使う。ビルドが変わっていなくても必ず入れ替える。
+
+```bash
+herdr plugin action invoke okonomi.auto-tab-name.restart
+```
+
 ## state ディレクトリ
 
 デーモンの状態は `${HERDR_PLUGIN_STATE_DIR}` 以下に置く。`<key>` は接続先 socket
@@ -106,7 +123,7 @@ herdr 0.8.0 / macOS で実際に確認した挙動。
 | ファイル | 内容 |
 | --- | --- |
 | `state-<key>.json` | タブごとの自動/手動モードと直前のコマンド名 |
-| `daemon-<key>.json` | 起動中デーモンの pid レコード |
+| `daemon-<key>.json` | 起動中デーモンの pid レコード(pid・スクリプトパス・起動時刻・起動時のビルドの版) |
 | `daemon-<key>.log` | デーモンのログ |
 | `start-<key>.lock` | `start` の多重実行を防ぐための排他ロック |
 

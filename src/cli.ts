@@ -14,14 +14,16 @@ import {
 import {
   isAlive,
   isRunningDaemon,
+  isStaleBuild,
   readRecord,
   removeOwnedRecord,
   writeRecord,
   type DaemonRecord,
 } from "./pidfile.js";
+import { buildStampOf } from "./build-stamp.js";
 
-const daemonScript = (): string =>
-  join(dirname(fileURLToPath(import.meta.url)), "daemon.js");
+const distDir = (): string => dirname(fileURLToPath(import.meta.url));
+const daemonScript = (): string => join(distDir(), "daemon.js");
 
 const START_LOCK_STALE_MS = 30_000;
 
@@ -83,41 +85,82 @@ export async function withStartLock<T>(
   }
 }
 
+export type StartPlan = "spawn" | "keep" | "replace";
+
+/**
+ * `start` が既存のデーモンに対して何をすべきかを決める。
+ *
+ * 走っているデーモンがあっても、それが古いビルドのコードなら入れ替える。
+ * Node は起動時にモジュールを読み込むので、プラグインを更新しても走っている
+ * プロセスは古いコードのまま動き続ける。`[[startup]]` は毎セッション `start`
+ * を呼ぶので、ここで気づけば更新後の最初のセッションで自動的に入れ替わる。
+ */
+export function planStart(
+  existing: DaemonRecord | null,
+  running: boolean,
+  currentStamp: string,
+): StartPlan {
+  if (existing === null || !running) return "spawn";
+  return isStaleBuild(existing, currentStamp) ? "replace" : "keep";
+}
+
 /**
  * デーモンを detached で切り離して起動する。
  *
  * herdr の startup hook が子プロセスを待ち合わせるのか、セッション終了時に kill
  * するのかは herdr のバージョンに依存する。切り離して即座に終わることで、
  * どちらの挙動でも成立させる。
+ *
+ * 呼び出し元が `withStartLock` を取っている前提。`forceReplace` はビルドの
+ * 新旧に関わらず入れ替える(`restart` 用)。
  */
-async function start(env: PluginEnv): Promise<string> {
-  return withStartLock(env, async () => {
-    const pidFile = pidPath(env);
-    const existing = await readRecord(pidFile);
-    if (isRunningDaemon(existing)) {
-      return `already running (pid ${existing!.pid})`;
-    }
+async function startLocked(env: PluginEnv, forceReplace: boolean): Promise<string> {
+  const pidFile = pidPath(env);
+  const existing = await readRecord(pidFile);
+  const running = isRunningDaemon(existing);
+  const buildStamp = await buildStampOf(distDir());
+  const plan = forceReplace && running ? "replace" : planStart(existing, running, buildStamp);
 
-    await ensureStateDir(env.stateDir);
-    const logFile = await open(logPath(env), "a", 0o600);
-    const script = daemonScript();
-    const child = spawn(process.execPath, [script], {
-      detached: true,
-      stdio: ["ignore", logFile.fd, logFile.fd],
-      env: process.env,
-    });
-    child.unref();
-    await logFile.close();
+  if (plan === "keep") return `already running (pid ${existing!.pid})`;
 
-    if (child.pid === undefined) throw new Error("failed to spawn the daemon");
-    const record: DaemonRecord = {
-      pid: child.pid,
-      script,
-      startedAt: new Date().toISOString(),
-    };
-    await writeRecord(pidFile, record);
-    return `started (pid ${child.pid})`;
+  let replaced = "";
+  if (plan === "replace") {
+    const oldPid = existing!.pid;
+    const stopped = await stop(env);
+    // 落としきれていないなら二重起動になるので、ここで諦める。
+    if (isRunningDaemon(await readRecord(pidFile))) return stopped;
+    replaced = `replaced pid ${oldPid}; `;
+  }
+
+  await ensureStateDir(env.stateDir);
+  const logFile = await open(logPath(env), "a", 0o600);
+  const script = daemonScript();
+  const child = spawn(process.execPath, [script], {
+    detached: true,
+    stdio: ["ignore", logFile.fd, logFile.fd],
+    env: process.env,
   });
+  child.unref();
+  await logFile.close();
+
+  if (child.pid === undefined) throw new Error("failed to spawn the daemon");
+  const record: DaemonRecord = {
+    pid: child.pid,
+    script,
+    startedAt: new Date().toISOString(),
+    buildStamp,
+  };
+  await writeRecord(pidFile, record);
+  return `${replaced}started (pid ${child.pid})`;
+}
+
+async function start(env: PluginEnv): Promise<string> {
+  return withStartLock(env, () => startLocked(env, false));
+}
+
+/** ビルドが変わっていなくても必ず入れ替える。更新を今すぐ反映したいとき用。 */
+async function restart(env: PluginEnv): Promise<string> {
+  return withStartLock(env, () => startLocked(env, true));
 }
 
 const STOP_POLL_INTERVAL_MS = 100;
@@ -170,14 +213,18 @@ async function main(): Promise<void> {
   const message =
     command === "start"
       ? await start(env)
-      : command === "stop"
-        ? await stop(env)
-        : command === "status"
-          ? await status(env)
-          : null;
+      : command === "restart"
+        ? await restart(env)
+        : command === "stop"
+          ? await stop(env)
+          : command === "status"
+            ? await status(env)
+            : null;
 
   if (message === null) {
-    throw new Error(`unknown command: ${command} (expected start, stop, or status)`);
+    throw new Error(
+      `unknown command: ${command} (expected start, restart, stop, or status)`,
+    );
   }
   process.stdout.write(`auto-tab-name: ${message}\n`);
 }

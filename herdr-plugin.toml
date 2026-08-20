@@ -15,6 +15,7 @@ command = ["npm", "ci", "--include=dev"]
 command = ["npm", "run", "build"]
 
 # 常駐デーモンを起動する。cli.js start は冪等なので、二重に走っても害はない。
+# 起動済みでもビルドが更新されていれば、start が古いデーモンを落として起動し直す。
 [[startup]]
 command = ["node", "dist/cli.js", "start"]
 
@@ -26,6 +27,13 @@ title = "Auto Tab Name: start"
 description = "Start the auto tab name daemon."
 contexts = ["global", "workspace"]
 command = ["node", "dist/cli.js", "start"]
+
+[[actions]]
+id = "restart"
+title = "Auto Tab Name: restart"
+description = "Restart the auto tab name daemon (pick up an updated build now)."
+contexts = ["global", "workspace"]
+command = ["node", "dist/cli.js", "restart"]
 
 [[actions]]
 id = "stop"

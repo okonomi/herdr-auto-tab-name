@@ -7,6 +7,12 @@ export type DaemonRecord = {
   /** デーモンスクリプトの絶対パス。pid 再利用の判別に使う。 */
   script: string;
   startedAt: string;
+  /**
+   * 起動時のビルドの版(`buildStampOf` の値)。更新の検知に使う。
+   *
+   * この仕組みより前に書かれた record には無いので省略可能にしている。
+   */
+  buildStamp?: string;
 };
 
 export async function readRecord(filePath: string): Promise<DaemonRecord | null> {
@@ -17,7 +23,9 @@ export async function readRecord(filePath: string): Promise<DaemonRecord | null>
     if (typeof v.pid !== "number" || !Number.isInteger(v.pid) || v.pid <= 0) return null;
     if (typeof v.script !== "string" || v.script.length === 0) return null;
     if (typeof v.startedAt !== "string") return null;
-    return { pid: v.pid, script: v.script, startedAt: v.startedAt };
+    const record: DaemonRecord = { pid: v.pid, script: v.script, startedAt: v.startedAt };
+    if (typeof v.buildStamp === "string") record.buildStamp = v.buildStamp;
+    return record;
   } catch {
     return null;
   }
@@ -87,4 +95,16 @@ export function isRunningDaemon(record: DaemonRecord | null): boolean {
   if (!isAlive(record.pid)) return false;
   const commandLine = commandLineOf(record.pid);
   return commandLine !== null && commandLine.includes(record.script);
+}
+
+/**
+ * 記録されたデーモンが、今ディスクにあるのとは別のビルドで走っているか。
+ *
+ * mtime の大小ではなく一致で見る。再インストールでビルドの mtime が過去に
+ * 巻き戻ることがあり、大小比較ではその向きの変化を取りこぼすため。
+ * buildStamp を持たない record はこの仕組みより前に起動したデーモンのもので、
+ * どのコードで走っているか分からないので入れ替えの対象にする。
+ */
+export function isStaleBuild(record: DaemonRecord, currentStamp: string): boolean {
+  return record.buildStamp !== currentStamp;
 }
